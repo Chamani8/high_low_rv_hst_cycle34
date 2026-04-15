@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -7,6 +8,7 @@ import re
 import astropy.units as u
 from synphot.models import Empirical1D
 from synphot import SpectralElement, SourceSpectrum, Observation
+import glob
 
 def sp_in_range(sp, start, end): 
     if sp == '':
@@ -151,12 +153,6 @@ def get_intrinsic_colors(sptype):
     VH0 = np.interp(num, x_base, [base_VH[k] for k in x_base])
     VK0 = np.interp(num, x_base, [base_VKs[k] for k in x_base])
 
-    if num == 9.5:
-        BV0 = -0.27
-        VJ0 = -0.64
-        VH0 = -0.74
-        VK0 = -0.84
-
     # Convert to colors relative to V (intrinsic)
     J_V0 = -VJ0
     H_V0 = -VH0
@@ -220,196 +216,163 @@ def mag_to_flambda_Vega(mag, band):
 
 if __name__ == "__main__":
     path = "/Users/cgunasekera/forked_extstar_data/high_low_rv_hst_cycle34/"
-    almaIII_file = f"{path}alma3plusgaiaxp.fits"
+    dat_path = f"{os.path.expanduser("~")}/extstar_data/DAT_files/"
+    almaIII_file = f"{path}alma3plusgaiabprp.fits"
     almaII_file = f"{path}alma2_catalogue.fit"
     crossmatch_file = almaIII_file.replace('.fits', '_wsptype.fits')
     RV_select_file = crossmatch_file.replace("_wsptype.fits", "_extremeRV.fits")
+    band_path = f"{os.path.expanduser("~")}/measure_extinction/measure_extinction/data/Band_RespCurves/"
 
-    do = "get fit_model ready" # options: "create_crossmatch_fits", "check_crossmatch_fits", "get BV", "plot compare RV"
+    custom_simbad = Simbad()
+    custom_simbad.add_votable_fields('sp_type', 'sp_bibcode')
 
-    if do == "create_crossmatch_fits":
-        custom_simbad = Simbad()
-        custom_simbad.add_votable_fields('sp_type', 'sp_bibcode')
+    with fits.open(almaIII_file) as hdul:
+        almaIII = hdul[1].data
 
-        with fits.open(almaIII_file) as hdul:
-            almaIII = hdul[1].data
+    with fits.open(almaII_file) as hdul:
+        almaII = hdul[1].data
 
-        with fits.open(almaII_file) as hdul:
-            almaII = hdul[1].data
+    #print(almaII.columns.names)
+    #print(almaIII.columns.names)
 
-        #print(almaII.columns.names)
-        #print(almaIII.columns.names)
+    # Select all the Alma II stars with a spectra type:
+    sp_mask = ~np.isin(almaII['SpType'], ['', 'B', 'O', 'OB', 'OB+', 'OB-', 'OB+M0'])
+    almaII_wSpType = almaII[sp_mask]
 
-        # Select all the Alma II stars with a spectra type:
-        sp_mask = ~np.isin(almaII['SpType'], ['', 'B', 'O', 'OB', 'OB+', 'OB-', 'OB+M0'])
-        almaII_wSpType = almaII[sp_mask]
+    almaII_wSpType_OB = select_spType(almaII, start="O9", end="B3")
 
-        almaII_wSpType_OB = select_spType(almaII, start="O9", end="B3")
+    # Select all the Alma III stars that are in Alma II and has spectral type:
+    IImask = np.isin(almaIII['GAIA'], almaII_wSpType['GaiaDR2'])
+    almaIII = almaIII[IImask]
 
-        # Select all the Alma III stars that are in Alma II and has spectral type:
-        IImask = np.isin(almaIII['GAIA'], almaII_wSpType['GaiaDR2'])
-        almaIII = almaIII[IImask]
+    print(f"Selecting {len(almaIII['GAIA'])} of {len(almaII['GaiaDR2'])} stars.")
 
-        print(f"Selecting {len(almaIII['GAIA'])} of {len(almaII['GaiaDR2'])} stars.")
+    sub_table = Table(rows=almaIII, names=almaIII.columns.names)
+    sub_table.write(crossmatch_file, overwrite=True)
+    print(f"new file created: {crossmatch_file}")
 
-        sub_table = Table(rows=almaIII, names=almaIII.columns.names)
-        sub_table.write(crossmatch_file, overwrite=True)
-        print(f"new file created: {crossmatch_file}")
+    # Load B and V filter curves
+    B_filter = SpectralElement.from_file(f"{band_path}JohnB.dat")
+    V_filter = SpectralElement.from_file(f"{band_path}JohnV.dat")
 
-    elif do == "check_crossmatch_fits":
-        with fits.open(crossmatch_file) as hdul:
-            almaIII = hdul[1].data
+    # Loop over stars
+    high_Rv_counter = 0
+    low_Rv_counter = 0
+    high_RV_stars = {}
+    low_RV_stars = {}
+    extremeRv_stars = []
+    plot_scale = "log"
+    for star in almaIII:
+#        if star['STARS'] not in [
+#                                    # Prince sample:
+#                                 'ALS 882',
+#                                 'HD 14 422',
+#                                 'HDE 237 056',
+#                                 'CPD -29 2176'
+#                                 'HDE 239 689',
+#                                 'HD 63 150',
+#                                 'GLS 6213',
+#                                 'GLS 6206',
+#                                 'BD +57 359',
+#                                 'GLS 13 253',
+#                                 'GLS 15 273',
+#                                 'BD +56 510',
+#                                 'HDE 303 313',
+#                                 'GLS 18 106',
+#                                 'GLS 8351',
+#                                 'GLS 18 098',
+#                                 'HD 111 934',
+#                                 'HDE 306 234',
+#                                 'HD 93 160',
+#                                 'HD 36 982',
+#                                 'theta^1 Ori BaBb',
+#                                 'theta^1 Ori B',
+#                                 # Low RV:
+#                                 'CPD -29 2176',
+#                                 'EV Vul',
+#                                 'HD 14 422',
+#                                 'HDE 237 056',
+#                                 'HDE 253 214',
+#                                 ]:
+#            continue
 
-        print(almaIII.columns.names)
-        print(len(almaIII['GAIA']))
-        print(almaIII['SIMBAD'])
+        wavelength = star['WAVE'] * 10  # Gaia XP: nm -> Å
+        c_nm = 3e8 * 1e9
 
-    elif do == "get BV":
-        band_path = "/Users/cgunasekera/measure_extinction/measure_extinction/data/Band_RespCurves/"
+        # W/nm/m^2 = (1e7 erg/s) / (10 Å) / (1e4 cm^2 ) = 100 erg/s/cm²/Å
+        flux = star['FLUX'] * 100 # W/nm/m^2 -> erg/s/cm²/Å
+        flux_err = star['FLUX_ERR']
 
-        # Load Gaia XP spectra
-        with fits.open(crossmatch_file) as hdul:
-            almaIII = hdul[1].data
+        # If spectra is empty skip star
+        if sum(flux) == 0.: continue
 
-        with fits.open(almaII_file) as hdul:
-            almaII = hdul[1].data
+        # Compute B, V synthetic magnitudes
+        B_mag, V_mag, BminusV = synthetic_obs_BV(wavelength, flux, B_filter, V_filter)
 
-        # Load B and V filter curves
-        B_filter = SpectralElement.from_file(f"{band_path}JohnB.dat")
-        V_filter = SpectralElement.from_file(f"{band_path}JohnV.dat")
+        IImask = np.isin(almaII['GaiaDR2'], star['GAIA'])
+        almaII_star = almaII[IImask]
+        sptype = almaII_star['SpType'][0].split(', ')
 
-        # Loop over stars
-        high_Rv_counter = 0
-        low_Rv_counter = 0
-        high_RV_stars = {}
-        low_RV_stars = {}
-        plot_scale = "log"
-        for star in almaIII:
-#            if star['STARS'] not in [
-                                        # Prince sample:
-    ##                                 'ALS 882',
-    #                                 'HD 14 422',
-    #                                 'HDE 237 056',
-    #                                 'CPD -29 2176'
-    ##                                 'HDE 239 689',
-    #                                 'HD 63 150',
-    ##                                 'GLS 6213',
-    ##                                 'GLS 6206',
-    ##                                 'BD +57 359',
-    ##                                 'GLS 13 253',
-    ##                                 'GLS 15 273',
-    ##                                 'BD +56 510',
-    ##                                 'HDE 303 313',
-    ##                                 'GLS 18 106',
-    ##                                 'GLS 8351',
-    ##                                 'GLS 18 098',
-    ##                                 'HD 111 934',
-    ##                                 'HDE 306 234',
-    ##                                 'HD 93 160',
-    ##                                 'HD 36 982',
-    ##                                 'theta^1 Ori BaBb',
-    ##                                    # Low RV:
-    ###                                    'CPD -29 2176',
-    ###                                    'EV Vul',
-    ###                                    'HD 14 422',
-    ###                                    'HDE 237 056',
-    ###                                    'HDE 253 214',
-#                                     ]:
-#                continue
+        RVs = []
+        for sp in sptype:
+            BV0, JV0, HV0, KV0 = get_intrinsic_colors(sp)
+            if BV0 is None:
+                continue
 
-            wavelength = star['WAVE'] * 10  # Gaia XP: nm -> Å
-            c_nm = 3e8 * 1e9
+            E_BV = BminusV - BV0
+            AV = calc_AV_JHKs(V_mag, star['J'], star['H'], star['KS'], JV0, HV0, KV0, flux)
+            RV = np.array(AV) / E_BV
+            RVs.append(RV)
 
-            # W/nm/m^2 = (1e7 erg/s) / (10 Å) / (1e4 cm^2 ) = 100 erg/s/cm²/Å
-            flux = star['FLUX'] * 100 # W/nm/m^2 -> erg/s/cm²/Å
-            flux_err = star['FLUX_ERR']
+        print(star['STARS'], sptype, RVs)
 
-            # If spectra is empty skip star
-            if sum(flux) == 0.: continue
+        avg_RV = np.mean(RVs)
 
-            # Compute B, V synthetic magnitudes
-            B_mag, V_mag, BminusV = synthetic_obs_BV(wavelength, flux, B_filter, V_filter)
-
-            IImask = np.isin(almaII['GaiaDR2'], star['GAIA'])
-            almaII_star = almaII[IImask]
-            sptype = almaII_star['SpType'][0].split(', ')
-
-            RVs = []
-            for sp in sptype:
-                BV0, JV0, HV0, KV0 = get_intrinsic_colors(sp)
-                if BV0 is None:
-                    continue
-
-                E_BV = BminusV - BV0
-                AV = calc_AV_JHKs(V_mag, star['J'], star['H'], star['KS'], JV0, HV0, KV0, flux)
-                RV = np.array(AV) / E_BV
-                RVs.append(RV)
-
-            print(star['STARS'], sptype, RVs)
-
-            avg_RV = np.mean(RVs)
-
-            band_x = np.array([4400, 5500,
-                               12500, 16500, 21600])
-            band_y = np.array([mag_to_flambda_Vega(B_mag, 'B'), mag_to_flambda_Vega(V_mag, 'V'),
-                               mag_to_flambda_Vega(star['J'], 'J'), mag_to_flambda_Vega(star['H'], 'H'),
-                               mag_to_flambda_Vega(star['KS'], 'Ks')
-                               ])
-#            if plot_scale == "log":
-#                plt.yscale("log")
-#                plt.plot(wavelength, flux,
-#                        label = f"{star['STARS']}, RV ={avg_RV:.3f}")
-#                plt.scatter(band_x, band_y
-#                            )
-#            elif plot_scale == "lin":
-#                plt.plot(wavelength, flux-flux[0],
-#                        label = f"{star['STARS']}, RV ={avg_RV:.3f}")
-#                plt.scatter(band_x, band_y-flux[0]
-#                            )
-
-            if (avg_RV > 5.0) and E_BV > 0.3 and avg_RV > 1.0: #or avg_RV < 2.5:
-                high_Rv_counter += 1
-                print("high RV", ",", star['STARS'], ",", avg_RV)
-                high_RV_stars[star['STARS']] = avg_RV
-
-            if avg_RV < 2.5 and E_BV > 0.3 and avg_RV > 1.0:
-                low_RV_of_star = avg_RV
-                low_Rv_counter += 1
-                print("low RV", ",", star['STARS'], ",", avg_RV)
-                low_RV_stars[star['STARS']] = avg_RV
-
-        print(f"RESULTS:\nfound {low_Rv_counter} RV < 2.5 stars, {high_Rv_counter} RV > 5.0 stars.")
-
-#        plt.legend()
+        band_x = np.array([4400, 5500,
+                           12500, 16500, 21600])
+        band_y = np.array([mag_to_flambda_Vega(B_mag, 'B'), mag_to_flambda_Vega(V_mag, 'V'),
+                           mag_to_flambda_Vega(star['J'], 'J'), mag_to_flambda_Vega(star['H'], 'H'),
+                           mag_to_flambda_Vega(star['KS'], 'Ks')
+                           ])
 #        if plot_scale == "log":
-#            plt.ylabel(r"flux (erg/s/cm$^2$/$\AA$)")
+#            plt.yscale("log")
+#            plt.plot(wavelength, flux,
+#                    label = f"{star['STARS']}, RV ={avg_RV:.3f}")
+#            plt.scatter(band_x, band_y
+#                        )
 #        elif plot_scale == "lin":
-#            plt.ylabel(r"flux (erg/s/cm$^2$/$\AA$) + offset")
-#        plt.xlabel(r"$\lambda$ ($\AA$)")
-#        plt.show()
+#            plt.plot(wavelength, flux-flux[0],
+#                    label = f"{star['STARS']}, RV ={avg_RV:.3f}")
+#            plt.scatter(band_x, band_y-flux[0]
+#                        )
 
-        #outname = crossmatch_file.replace("_wsptype.fits", "_lowRV.fits")
-        #low_RV_table = Table(rows=low_RV_stars, names=almaIII.columns.names)
-        #low_RV_table.write(crossmatch_file, overwrite=True)
-        #print(f"new file created: {crossmatch_file}")
+        if (avg_RV > 5.0) and E_BV > 0.3 and avg_RV > 1.0: #or avg_RV < 2.5:
+            high_Rv_counter += 1
+            print("high RV", ",", star['STARS'], ",", avg_RV)
+            high_RV_stars[star['STARS']] = avg_RV
+            extremeRv_stars.append(star)
 
-        high_RV_table = Table(rows=high_RV_stars, names=almaIII.columns.names)
-        high_RV_table.write(RV_select_file, overwrite=True)
-        print(f"new file created: {RV_select_file}")
+        if avg_RV < 2.5 and E_BV > 0.3 and avg_RV > 1.0:
+            low_RV_of_star = avg_RV
+            low_Rv_counter += 1
+            print("low RV", ",", star['STARS'], ",", avg_RV)
+            low_RV_stars[star['STARS']] = avg_RV
 
-    elif do == "plot compare RV":
-        fit_RV = [2.389, 2.492, 2.749, 2.814, 2.824, 2.828, 2.855, 2.855, 2.904, 2.962, 3.003, 3.023, 3.107, 5.662, 5.346]
-        est_RV = [3.496, 3.248, 3.063, 3.114, 3.644, 3.248, 3.358, 3.323, 3.484, 3.491, 3.571, 3.342, 3.683, 6.241, 5.767]
-        mean_diff = np.mean(abs(np.array(fit_RV) - np.array(est_RV))/np.array(fit_RV))
-        est_RV = (1.-mean_diff)*np.array(est_RV)
+    print(f"RESULTS:\nfound {low_Rv_counter} RV < 2.5 stars, {high_Rv_counter} RV > 5.0 stars.")
 
-        x = [2.24, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 6.8]
-        y = [2.24, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 6.8]
+#    plt.legend()
+#    if plot_scale == "log":
+#        plt.ylabel(r"flux (erg/s/cm$^2$/$\AA$)")
+#    elif plot_scale == "lin":
+#        plt.ylabel(r"flux (erg/s/cm$^2$/$\AA$) + offset")
+#    plt.xlabel(r"$\lambda$ ($\AA$)")
+#    plt.show()
 
-        plt.plot(x,y, '--')
-        plt.scatter(est_RV, fit_RV)
-        plt.xlim(2.24,6.8)
-        plt.ylim(2.24,6.8)
-        plt.ylabel('fitted R(V)')
-        plt.xlabel('estimated R(V)')
-        plt.show()
+#   outname = crossmatch_file.replace("_wsptype.fits", "_lowRV.fits")
+#   low_RV_table = Table(rows=low_RV_stars, names=almaIII.columns.names)
+#   low_RV_table.write(crossmatch_file, overwrite=True)
+#   print(f"new file created: {crossmatch_file}")
+
+    high_RV_table = Table(rows=extremeRv_stars, names=almaIII.columns.names)
+    high_RV_table.write(RV_select_file, overwrite=True)
+    print(f"new file created: {RV_select_file}")
